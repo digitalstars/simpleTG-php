@@ -1,0 +1,16 @@
+{
+  "name": "digitalstars/simple-tg",
+  "description": "PHP library for Telegram bots with Bot API and MTProto API support",
+  "type": "library",
+  "require": {
+    "php": ">=8.0",
+    "brick/math": "0.13.0",
+    "danog/primemodule": "1.0.13",
+    "ext-sockets": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "DigitalStars\\SimpleTG\\": "src/"
+    }
+  }
+}
