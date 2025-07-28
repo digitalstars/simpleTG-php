@@ -104,48 +104,59 @@ class Client {
     }
 
     public function parseResPQ(string $data): array {
-//        var_dump(bin2hex($data));
+        $offset = 0;
 
-        $hexData = bin2hex($data);
-
-        // Вспомогательная функция для извлечения данных
-        $extract_bytes = function (int $offset, int $length, bool $reverse = false) use ($hexData): string {
-            // умножаем на 2, чтобы получить длину в hex-символах
-            $slice = substr($hexData, $offset * 2, $length * 2);
-            return $reverse ? $this->reverseBytes($slice) : $slice;
+        // Вспомогательная функция для извлечения данных фиксированного размера
+        $extract_fixed_size = static function (int $length) use ($data, &$offset): string {
+            if (strlen($data) < $offset + $length) {
+                throw new \Exception("Not enough data to read {$length} bytes at offset {$offset}");
+            }
+            $slice = substr($data, $offset, $length);
+            $offset += $length;
+            return $slice;
         };
 
-        $auth_key_id = $extract_bytes(0, 8);
-        $message_id = $extract_bytes(8, 8);
-        $message_length = hexdec($extract_bytes(16, 4, true));
-        $resPQ = $extract_bytes(20, 4);
-        $nonce = $extract_bytes(24, 16, true);
-        $server_nonce = $extract_bytes(40, 16, true);
-        $pq = substr($data, 56, 12); //todo похоже из-за этого криво получается
-        $vectorConstructor = $extract_bytes(68, 4);
-        $count = hexdec($extract_bytes(72, 4, true));
+        $auth_key_id = $extract_fixed_size(8);
+        $message_id = $extract_fixed_size(8);
+        $message_length = unpack('V', $extract_fixed_size(4))[1];
+        $resPQ_constructor_raw = $extract_fixed_size(4);
+        $resPQ_constructor_int = unpack('V', $resPQ_constructor_raw)[1];
 
-        if ($vectorConstructor !== '15c4b51c') {
-            trigger_error("Invalid vector constructor number", E_USER_WARNING);
+        // Проверяем, что получили именно resPQ
+        if ($resPQ_constructor_int !== 0x05162463) { // 0x05162463 - это число, а не строка
+            trigger_error("Expected resPQ constructor (0x05162463), but got " . dechex($resPQ_constructor_int), E_USER_WARNING);
         }
+
+        $nonce = $extract_fixed_size(16);
+        $server_nonce = $extract_fixed_size(16);
+
+        // Вот он, правильный парсинг `pq`!
+        $pq = $this->parseTlString($data, $offset);
+
+        $vector_constructor_int = unpack('V', $extract_fixed_size(4))[1];
+        if ($vector_constructor_int !== 0x1cb5c415) {
+            trigger_error("Invalid vector constructor number (0x1cb5c415), but got " . dechex($vector_constructor_int), E_USER_WARNING);
+        }
+
+        $count = unpack('V', $extract_fixed_size(4))[1];
 
         // Чтение fingerprints
         $fingerprints = [];
         for ($i = 0; $i < $count; $i++) {
-            $fingerprints[] = $extract_bytes(76 + $i * 8, 8); // 8 байт для каждого отпечатка
+            $fingerprints[] = $extract_fixed_size(8); // 8 байт для каждого отпечатка
         }
 
         return [
-            'auth_key_id' => $auth_key_id,
-            'message_id' => $message_id,
+            'auth_key_id' => bin2hex($auth_key_id),
+            'message_id' => bin2hex($message_id),
             'message_length' => $message_length,
-            'resPQ' => $resPQ,
-            'nonce' => $nonce,
-            'server_nonce' => $server_nonce,
+            'resPQ' => dechex($resPQ_constructor_int),
+            'nonce' => bin2hex($nonce),
+            'server_nonce' => bin2hex($server_nonce),
             'pq' => $pq,
-            'vector_constructor' => $vectorConstructor,
+            'vector_constructor' => dechex($vector_constructor_int),
             'fingerprints_count' => $count,
-            'server_public_key_fingerprints' => $fingerprints,
+            'server_public_key_fingerprints' => array_map('bin2hex', $fingerprints),
         ];
     }
 
@@ -223,5 +234,48 @@ class Client {
     // Логирование отладочной информации
     public static function logHexDebug(string $msg, string $label): void {
         echo $label . " : " . bin2hex($msg) . "\n";
+    }
+
+    /**
+     * Парсит TL-строку (тип bytes) из бинарного потока.
+     *
+     * @param string $binaryData Входные бинарные данные.
+     * @param int    &$offset    Текущее смещение (передаётся по ссылке и будет обновлено).
+     * @return string Извлечённые данные.
+     */
+    private function parseTlString(string $binaryData, int &$offset): string
+    {
+        // Читаем первый байт, чтобы определить формат длины
+        $firstByte = ord($binaryData[$offset]);
+        $offset++;
+
+        $length = 0;
+        $padding = 0;
+
+        if ($firstByte <= 253) {
+            // Короткая строка: первый байт - это и есть длина
+            $length = $firstByte;
+            // Выравнивание зависит от (1 байт префикса + длина)
+            $padding = (4 - ($length + 1) % 4) % 4;
+        } else if ($firstByte === 254) {
+            // Длинная строка: 0xFE + 3 байта длины (little-endian)
+            $length = unpack('V', substr($binaryData, $offset, 3) . "\x00")[1];
+            $offset += 3;
+            // Выравнивание зависит от (4 байта префикса + длина)
+            $padding = (4 - $length % 4) % 4;
+        } else {
+            // Неожиданное значение, возможно, стоит бросить исключение
+            trigger_error("Invalid length prefix for TL-string: " . $firstByte, E_USER_WARNING);
+            return '';
+        }
+
+        // Читаем сами данные
+        $data = substr($binaryData, $offset, $length);
+        $offset += $length;
+
+        // Пропускаем выравнивающие байты
+        $offset += $padding;
+
+        return $data;
     }
 }

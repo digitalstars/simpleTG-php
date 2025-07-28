@@ -1,84 +1,87 @@
+// File: src/cpp/primemodule.cpp
+
 #include <iostream>
 #include <stdexcept>
 #include <cstdint>
-#include <cstdlib>
+#include <string>  // Для std::stoull
+#include <random>  // Для криптостойкого генератора
 
 namespace PrimeModule {
-    // Функция для нахождения наибольшего общего делителя (gcd)
-    inline uint64_t gcd(uint64_t a, uint64_t b) {
-        while (a != 0 && b != 0) {
-            while ((b & 1) == 0) {
-                b >>= 1;
-            }
-            while ((a & 1) == 0) {
-                a >>= 1;
-            }
-            if (a > b) {
-                a -= b;
-            } else {
-                b -= a;
-            }
-        }
-        return b == 0 ? a : b;
-    }
+    // Используем std::gcd из стандарта C++17, он эффективен.
+    // Если у вас компилятор старше, можно вернуть вашу реализацию.
+    #include <numeric> // Для std::gcd
+    
+    // Функция факторизации числа (алгоритм Полларда-Брента)
+    uint64_t factorize(uint64_t number) {
+        // 1. Инициализация криптостойкого генератора случайных чисел
+        std::random_device rd;
+        std::mt19937_64 gen(rd());
+        std::uniform_int_distribution<uint64_t> distrib(1, number - 1);
+        std::uniform_int_distribution<uint64_t> distrib_c(1, number - 1);
 
-    // Функция факторизации числа
-    uint32_t factorize(uint64_t number) {
-        int32_t it = 0, i, j;
-        uint64_t g = 0;
-        for (i = 0; i < 3 || it < 1000; i++) {
-            uint64_t t = ((rand() & 15) + 17) % number;  // Заменили lrand48 на rand
-            uint64_t x = (long long)rand() % (number - 1) + 1, y = x;
-            int32_t lim = 1 << (i + 18);
-            for (j = 1; j < lim; j++) {
-                ++it;
-                uint64_t a = x, b = x, c = t;
-                while (b) {
-                    if (b & 1) {
-                        c += a;
-                        if (c >= number) {
-                            c -= number;
-                        }
-                    }
-                    a += a;
-                    if (a >= number) {
-                        a -= number;
-                    }
-                    b >>= 1;
-                }
-                x = c;
-                uint64_t z = x < y ? number + x - y : x - y;
-                g = PrimeModule::gcd(z, number);
-                if (g != 1) {
-                    break;
-                }
-                if (!(j & (j - 1))) {
-                    y = x;
-                }
+        if (number % 2 == 0) return 2;
+        if (number % 3 == 0) return 3;
+
+        uint64_t y = distrib(gen);
+        uint64_t c = distrib_c(gen);
+        uint64_t m = 100; // Количество итераций в пакете
+
+        uint64_t g = 1, r = 1, q = 1;
+        uint64_t x, ys;
+
+        while (g == 1) {
+            x = y;
+            for (uint64_t i = 0; i < r; ++i) {
+                // y = (y * y + c) % number;
+                // Используем __int128 для предотвращения переполнения при умножении
+                y = ((unsigned __int128)y * y + c) % number;
             }
-            if (g > 1 && g < number) {
-                break;
+
+            uint64_t k = 0;
+            while (k < r && g == 1) {
+                ys = y;
+                for (uint64_t i = 0; i < std::min(m, r - k); ++i) {
+                    y = ((unsigned __int128)y * y + c) % number;
+                    q = (unsigned __int128)q * (x > y ? x - y : y - x) % number;
+                }
+                g = std::gcd(q, number);
+                k += m;
             }
+            r *= 2;
         }
 
+        if (g == number) {
+            while (true) {
+                ys = ((unsigned __int128)ys * ys + c) % number;
+                g = std::gcd(x > ys ? x - ys : ys - x, number);
+                if (g > 1) break;
+            }
+        }
+        
+        // Алгоритм может вернуть само число, если оно простое, или 1 при ошибке.
+        // Нам нужен нетривиальный делитель.
         if (g > 1 && g < number) {
-            return (uint32_t)g;
-        } else {
-            throw std::runtime_error("Factorization failed!");
+            return g;
         }
+
+        // Если не удалось найти, возвращаем 0 как признак неудачи.
+        return 0;
     }
 }
 
-// Функция для факторизации без использования потоков
-extern "C" int32_t factorizeFFI(const char *number) {
+// FFI-совместимая функция
+extern "C" int64_t factorizeFFI(const char *number_str) {
     try {
-        uint64_t num = std::stoull(number);  // Преобразуем строку в число
+        uint64_t num = std::stoull(number_str);
+        if (num <= 1) return 0;
 
-        // Выполняем факторизацию
-        uint32_t result = PrimeModule::factorize(num);
-        std::cout << "Factor: " << result << std::endl;
-    } catch (...) {
-        return -1;  // Ошибка
+        uint64_t result = PrimeModule::factorize(num);
+        
+        // Возвращаем результат. 0 означает неудачу.
+        return static_cast<int64_t>(result);
+
+    } catch (const std::exception& e) {
+        // В случае ошибки (например, stoull не смог распарсить) возвращаем -1
+        return -1;
     }
-    return 0;  // Успешное выполнение
 }
